@@ -279,8 +279,27 @@ def fam_webhook():
 
 
 # ============================================
+# ✅ ROOT
+# ============================================
+@app.route('/')
+def root():
+    return jsonify({
+        "status": "ok",
+        "service": "BEYBLADE FamPay Backend",
+        "firebase": firebase_initialized,
+        "endpoints": [
+            "/healthz",
+            "/api/fam/create-order",
+            "/api/fam/verify",
+            "/api/fam/webhook"
+        ]
+    }), 200
+
+
+# ============================================
 # ✅ RUN
 # ============================================
 if __name__ == '__main__':
     print("🚀 FamPay Backend running")
+    print(f"Firebase: {'✅ Connected' if firebase_initialized else '❌ NOT Connected'}")
     app.run(host='0.0.0.0', port=5000, debug=False)

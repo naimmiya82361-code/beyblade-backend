@@ -10,29 +10,75 @@ from flask_cors import CORS
 import requests
 import firebase_admin
 from firebase_admin import credentials, db
+import os
+import json
 
 app = Flask(__name__)
-CORS(app)
 
 # ============================================
-# 🔧 CONFIG — YAHAN APNI DETAILS DAALO
+# ✅ CORS FIX
 # ============================================
-FAMPAY_API_KEY = "fam_d7394c3e6dc5c9cdab27e426a744f85d9f9bdc9d"
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+
+
+# ============================================
+# 🔧 CONFIG
+# ============================================
+FAMPAY_API_KEY = os.environ.get("FAMPAY_API_KEY", "fam_d7394c3e6dc5c9cdab27e426a744f85d9f9bdc9d")
 FAMPAY_UPI_ID = "fathernajim@fam"
 FAMPAY_BASE_URL = "https://famgateway.in/api"
 FIREBASE_DB_URL = "https://bey-blade-5a65f-default-rtdb.firebaseio.com"
-FIREBASE_CRED_PATH = "firebase-service-account.json"
-
-# Initialize Firebase
-cred = credentials.Certificate(FIREBASE_CRED_PATH)
-firebase_admin.initialize_app(cred, {'databaseURL': FIREBASE_DB_URL})
 
 
 # ============================================
-# CREATE ORDER
+# ✅ Firebase Init
 # ============================================
-@app.route('/api/fam/create-order', methods=['POST'])
+firebase_initialized = False
+
+if os.path.exists("firebase-service-account.json"):
+    try:
+        cred = credentials.Certificate("firebase-service-account.json")
+        firebase_admin.initialize_app(cred, {'databaseURL': FIREBASE_DB_URL})
+        firebase_initialized = True
+        print("✅ Firebase initialized from JSON file")
+    except Exception as e:
+        print(f"❌ Firebase file error: {e}")
+
+if not firebase_initialized:
+    firebase_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON")
+    if firebase_json:
+        try:
+            cred_dict = json.loads(firebase_json)
+            cred = credentials.Certificate(cred_dict)
+            firebase_admin.initialize_app(cred, {'databaseURL': FIREBASE_DB_URL})
+            firebase_initialized = True
+            print("✅ Firebase initialized from env variable")
+        except Exception as e:
+            print(f"❌ Firebase env error: {e}")
+
+if not firebase_initialized:
+    print("⚠️ Firebase NOT initialized")
+
+
+# ============================================
+# ✅ HEALTH CHECK
+# ============================================
+@app.route('/healthz')
+def healthz():
+    return jsonify({
+        "status": "ok",
+        "firebase": firebase_initialized
+    }), 200
+
+
+# ============================================
+# ✅ CREATE ORDER
+# ============================================
+@app.route('/api/fam/create-order', methods=['POST', 'OPTIONS'])
 def create_order():
+    if request.method == 'OPTIONS':
+        return jsonify({"ok": True}), 200
+
     data = request.json
     amount = data.get('amount')
     user_id = data.get('user_id')
@@ -50,7 +96,7 @@ def create_order():
             },
             json={
                 "amount": float(amount),
-                "redirect_url": "https://rambhaipanel.shop/success"
+                "redirect_url": "https://beyblade-store.netlify.app/success"
             },
             timeout=15
         )
@@ -66,13 +112,16 @@ def create_order():
         order_data = result.get("data", {})
         order_id = order_data.get("order_id")
 
-        if order_id:
-            db.reference(f'pending_orders/{order_id}').set({
-                'order_id': order_id,
-                'amount': float(amount),
-                'user_id': user_id,
-                'status': 'pending'
-            })
+        if order_id and firebase_initialized:
+            try:
+                db.reference(f'pending_orders/{order_id}').set({
+                    'order_id': order_id,
+                    'amount': float(amount),
+                    'user_id': user_id,
+                    'status': 'pending'
+                })
+            except Exception as e:
+                print(f"Firebase save error: {e}")
 
         return jsonify({
             "success": True,
@@ -90,10 +139,13 @@ def create_order():
 
 
 # ============================================
-# VERIFY PAYMENT
+# ✅ VERIFY PAYMENT
 # ============================================
-@app.route('/api/fam/verify', methods=['POST'])
+@app.route('/api/fam/verify', methods=['POST', 'OPTIONS'])
 def verify_payment():
+    if request.method == 'OPTIONS':
+        return jsonify({"ok": True}), 200
+
     data = request.json
     order_id = data.get('order_id')
     amount = data.get('amount')
@@ -131,29 +183,35 @@ def verify_payment():
 
 
 # ============================================
-# WEBHOOK (optional)
+# ✅ WEBHOOK
 # ============================================
-@app.route('/api/fam/webhook', methods=['POST'])
+@app.route('/api/fam/webhook', methods=['POST', 'OPTIONS'])
 def fam_webhook():
+    if request.method == 'OPTIONS':
+        return jsonify({"ok": True}), 200
+
     data = request.json
     order_id = data.get('order_id')
     utr = data.get('utr')
     amount = data.get('amount')
     status = data.get('status')
 
-    if status == 'success' and order_id:
-        db.reference(f'pending_orders/{order_id}').update({
-            'status': 'completed',
-            'utr': utr,
-            'amount': amount
-        })
+    if status == 'success' and order_id and firebase_initialized:
+        try:
+            db.reference(f'pending_orders/{order_id}').update({
+                'status': 'completed',
+                'utr': utr,
+                'amount': amount
+            })
+        except Exception as e:
+            print(f"Webhook error: {e}")
 
     return jsonify({"success": True}), 200
 
 
 # ============================================
-# RUN
+# ✅ RUN
 # ============================================
 if __name__ == '__main__':
-    print("🚀 FamPay Backend running on http://localhost:5000")
+    print("🚀 FamPay Backend running")
     app.run(host='0.0.0.0', port=5000, debug=False)

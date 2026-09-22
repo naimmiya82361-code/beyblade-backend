@@ -1,5 +1,5 @@
 """
-FamPay Auto-Verify Backend
+FamAPI Auto-Verify Backend
 ===========================
 Requirements:
     pip install flask flask-cors requests firebase-admin
@@ -23,11 +23,10 @@ CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 
 # ============================================
-# 🔧 CONFIG
+# 🔧 CONFIG — FamAPI
 # ============================================
-FAMPAY_API_KEY = os.environ.get("FAMPAY_API_KEY", "fam_d7394c3e6dc5c9cdab27e426a744f85d9f9bdc9d")
-FAMPAY_UPI_ID = "fathernajim@fam"
-FAMPAY_BASE_URL = "https://famgateway.in/api"
+FAMPAY_API_KEY = os.environ.get("FAMPAY_API_KEY", "FAM_LIVE_sk_KGKthfsQ8hsCuzX8XRYrb1cKXkJZwh6f")
+FAMPAY_BASE_URL = "https://py.freepanel.in/api/v1"
 FIREBASE_DB_URL = "https://bey-blade-5a65f-default-rtdb.firebaseio.com"
 
 
@@ -81,7 +80,7 @@ def healthz():
 def root():
     return jsonify({
         "status": "ok",
-        "service": "BEYBLADE FamPay Backend",
+        "service": "BEYBLADE FamAPI Backend",
         "firebase": firebase_initialized,
         "endpoints": [
             "/healthz",
@@ -93,7 +92,7 @@ def root():
 
 
 # ============================================
-# ✅ CREATE ORDER
+# ✅ CREATE ORDER (FamAPI)
 # ============================================
 @app.route('/api/fam/create-order', methods=['POST', 'OPTIONS'])
 def create_order():
@@ -109,14 +108,18 @@ def create_order():
         return jsonify({"success": False, "message": "Invalid amount"}), 400
 
     try:
+        # FamAPI me amount PAISE me jaata hai (₹1 = 100 paise)
+        amount_paise = int(float(amount) * 100)
+        
         resp = requests.post(
-            f"{FAMPAY_BASE_URL}/create-order.php",
+            f"{FAMPAY_BASE_URL}/orders",
             headers={
                 "Authorization": f"Bearer {FAMPAY_API_KEY}",
                 "Content-Type": "application/json"
             },
             json={
-                "amount": float(amount),
+                "amount": amount_paise,
+                "receipt": f"BEY_{user_id}_{int(float(amount))}",
                 "redirect_url": "https://beyblade-store.netlify.app/success"
             },
             timeout=15
@@ -125,14 +128,15 @@ def create_order():
         result = resp.json()
         print(f"📦 Create order response: {result}")
 
-        if result.get("status") != "success":
+        # FamAPI response check
+        if not result.get("success") and result.get("status") != "success":
             return jsonify({
                 "success": False,
-                "message": result.get("message", "API Error")
+                "message": result.get("message", result.get("error", "API Error"))
             }), 400
 
-        order_data = result.get("data", {})
-        order_id = order_data.get("order_id")
+        order_data = result.get("data", result)
+        order_id = order_data.get("order_id") or order_data.get("id")
 
         if order_id and firebase_initialized:
             try:
@@ -148,9 +152,9 @@ def create_order():
         return jsonify({
             "success": True,
             "order_id": order_id,
-            "qr_code": order_data.get("qr_url"),
-            "upi_string": order_data.get("upi_intent"),
-            "checkout_url": order_data.get("checkout_url"),
+            "qr_code": order_data.get("qr_code") or order_data.get("qr_url"),
+            "upi_string": order_data.get("upi_string") or order_data.get("upi_intent"),
+            "checkout_url": order_data.get("payment_url") or order_data.get("checkout_url"),
             "amount": amount
         })
 
@@ -163,7 +167,7 @@ def create_order():
 
 
 # ============================================
-# ✅ VERIFY PAYMENT
+# ✅ VERIFY PAYMENT (FamAPI)
 # ============================================
 @app.route('/api/fam/verify', methods=['POST', 'OPTIONS'])
 def verify_payment():
@@ -172,28 +176,28 @@ def verify_payment():
 
     data = request.json
     order_id = data.get('order_id')
-    amount = data.get('amount')
-    utr = data.get('utr', '').strip()
 
     if not order_id:
         return jsonify({"success": False, "message": "Order ID required"}), 400
 
     try:
         resp = requests.get(
-            f"{FAMPAY_BASE_URL}/verify-order.php",
+            f"{FAMPAY_BASE_URL}/orders/{order_id}",
             headers={"Authorization": f"Bearer {FAMPAY_API_KEY}"},
-            params={"order_id": order_id},
             timeout=15
         )
         result = resp.json()
         print(f"🔍 Verify response: {result}")
 
-        if result.get("status") == "success" or result.get("verified") == True:
+        order_data = result.get("data", result)
+        status = order_data.get("status", "").lower()
+
+        if status in ["success", "completed", "paid"]:
             return jsonify({
                 "success": True,
                 "verified": True,
-                "utr": result.get("data", {}).get("utr", utr),
-                "amount": result.get("data", {}).get("amount", amount),
+                "utr": order_data.get("utr", ""),
+                "amount": order_data.get("amount", 0) / 100,
                 "order_id": order_id
             })
         else:
@@ -210,7 +214,7 @@ def verify_payment():
 
 
 # ============================================
-# ✅ WEBHOOK (POST + GET + HEAD + OPTIONS)
+# ✅ WEBHOOK (FamAPI)
 # ============================================
 @app.route('/api/fam/webhook', methods=['POST', 'OPTIONS', 'GET', 'HEAD'])
 def fam_webhook():
@@ -228,35 +232,44 @@ def fam_webhook():
         data = request.json
         print(f"📩 Webhook received: {data}")
         
-        utr = data.get('utr')
+        # FamAPI webhook fields (flexible)
+        order_id = data.get('order_id') or data.get('id')
         amount = data.get('amount')
-        status = data.get('status')
-        transaction_id = data.get('transaction_id')
-
-        if status == 'success' and firebase_initialized:
+        status = (data.get('status') or data.get('event') or '').lower()
+        utr = data.get('utr') or data.get('transaction_id')
+        
+        # Amount paise me aata hai — rupees me convert
+        if amount:
             try:
-                orders_ref = db.reference('pending_orders')
-                all_orders = orders_ref.get() or {}
+                amount = float(amount) / 100 if float(amount) > 100 else float(amount)
+            except:
+                pass
+
+        if status in ['success', 'completed', 'paid', 'payment.success'] and firebase_initialized:
+            try:
+                # Order id se dhundho
+                order_ref = db.reference(f'pending_orders/{order_id}')
+                order = order_ref.get()
                 
-                matched_order_id = None
-                matched_order = None
+                # Agar direct order nahi mila to amount se match karo
+                if not order:
+                    orders_ref = db.reference('pending_orders')
+                    all_orders = orders_ref.get() or {}
+                    for oid, o in all_orders.items():
+                        if o.get('status') == 'pending':
+                            if abs(float(o.get('amount', 0)) - float(amount)) < 0.01:
+                                order = o
+                                order_id = oid
+                                break
                 
-                for oid, order in all_orders.items():
-                    if order.get('status') == 'pending':
-                        order_amount = float(order.get('amount', 0))
-                        if abs(order_amount - float(amount)) < 0.01:
-                            matched_order_id = oid
-                            matched_order = order
-                            break
+                if not order:
+                    print(f"⚠️ Order not found: {order_id}")
+                    return jsonify({"success": True, "message": "Order not found"}), 200
                 
-                if not matched_order_id:
-                    print(f"⚠️ No pending order found for ₹{amount}")
-                    return jsonify({"success": False, "message": "Order not found"}), 404
-                
-                user_id = matched_order.get('user_id')
+                user_id = order.get('user_id')
                 if not user_id:
-                    print(f"⚠️ User ID not found in order: {matched_order_id}")
-                    return jsonify({"success": False, "message": "User not found"}), 404
+                    print(f"⚠️ User not found in order: {order_id}")
+                    return jsonify({"success": True}), 200
                 
                 user_ref = db.reference(f'users/{user_id}')
                 user = user_ref.get()
@@ -270,14 +283,14 @@ def fam_webhook():
                     db.reference(f'users/{user_id}/transactions').push({
                         'type': 'Deposit',
                         'amount': float(amount),
-                        'description': f'FamPay Auto-Verified - UTR: {utr}',
+                        'description': f'FamAPI Auto-Verified - UTR: {utr}',
                         'date': {'.sv': 'timestamp'},
-                        'gateway': 'FamPay',
+                        'gateway': 'FamAPI',
                         'utr': utr,
-                        'transaction_id': transaction_id
+                        'order_id': order_id
                     })
                     
-                    db.reference(f'pending_orders/{matched_order_id}').update({
+                    db.reference(f'pending_orders/{order_id}').update({
                         'status': 'completed',
                         'utr': utr,
                         'amount': float(amount),
@@ -305,6 +318,6 @@ def fam_webhook():
 # ✅ RUN
 # ============================================
 if __name__ == '__main__':
-    print("🚀 FamPay Backend running")
+    print("🚀 FamAPI Backend running")
     print(f"Firebase: {'✅ Connected' if firebase_initialized else '❌ NOT Connected'}")
     app.run(host='0.0.0.0', port=5000, debug=False)

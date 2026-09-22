@@ -210,12 +210,19 @@ def verify_payment():
 
 
 # ============================================
-# ✅ WEBHOOK
+# ✅ WEBHOOK (POST + GET + HEAD + OPTIONS)
 # ============================================
-@app.route('/api/fam/webhook', methods=['POST', 'OPTIONS'])
+@app.route('/api/fam/webhook', methods=['POST', 'OPTIONS', 'GET', 'HEAD'])
 def fam_webhook():
     if request.method == 'OPTIONS':
         return jsonify({"ok": True}), 200
+
+    if request.method == 'GET' or request.method == 'HEAD':
+        return jsonify({
+            "status": "ok",
+            "message": "Webhook endpoint active",
+            "firebase": firebase_initialized
+        }), 200
 
     try:
         data = request.json
